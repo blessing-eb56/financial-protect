@@ -179,3 +179,48 @@
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
     (ok (var-set contract-paused paused))))
 
+;; Function to calculate protection fee based on amount and duration
+(define-read-only (calculate-protection-fee (amount uint) (duration uint))
+  (let (
+    (base-fee-rate u1) ;; 0.1% base fee rate (1/1000)
+    (duration-multiplier (/ duration u144)) ;; Normalize duration to days (assuming 144 blocks per day)
+  )
+    (ok (/ (* amount (* base-fee-rate duration-multiplier)) u1000))))
+
+;; Read-only functions
+
+;; Function to get the current protection pool balance
+(define-read-only (get-pool-balance)
+  (ok (var-get protection-pool)))
+
+;; Function to check if a contract is protected
+(define-read-only (is-protected (contract principal))
+  (is-some (map-get? protected-contracts contract)))
+
+;; Function to get the protected amount for a contract
+(define-read-only (get-protected-amount (contract principal))
+  (ok (default-to u0 (map-get? protected-contracts contract))))
+
+;; Function to get the request status for a contract
+(define-read-only (get-request-status (requester principal) (request-amount uint))
+  (match (map-get? protection-requests { requester: requester, amount: request-amount })
+    request-data (ok { status: (get status request-data), timestamp: (get timestamp request-data), paid-amount: (get paid-amount request-data) })
+    ERR_REQUEST_NOT_FOUND))
+
+;; Function to get all pending requests for a contract
+(define-read-only (get-pending-requests (contract principal))
+  (ok {
+    contract: contract,
+    protected-amount: (default-to u0 (map-get? protected-contracts contract)),
+    has-protection: (is-some (map-get? protected-contracts contract)),
+    pending-request: (map-get? protection-requests { requester: contract, amount: (default-to u0 (map-get? protected-contracts contract)) })
+  }))
+
+;; Function to get contract statistics
+(define-read-only (get-contract-stats)
+  (ok {
+    pool-balance: (var-get protection-pool),
+    is-paused: (var-get contract-paused),
+    owner: (var-get contract-owner),
+    expiration-period: REQUEST_EXPIRATION_PERIOD
+  }))
