@@ -107,3 +107,75 @@
       (print { event: "request-filed", requester: caller, request-amount: request-amount, timestamp: block-height })
       (ok true))))
 
+;; Function to approve and pay out a request
+(define-public (approve-request (requester principal) (request-amount uint))
+  (begin
+    (asserts! (contract-not-paused) ERR_CONTRACT_PAUSED)
+    (let (
+      (request-key { requester: requester, amount: request-amount })
+      (request-data (unwrap! (map-get? protection-requests request-key) ERR_REQUEST_NOT_FOUND))
+      (pool-balance (var-get protection-pool))
+      (protected-amount (unwrap! (map-get? protected-contracts requester) ERR_NOT_PROTECTED))
+    )
+      (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get status request-data) "pending") ERR_REQUEST_ALREADY_PROCESSED)
+      (asserts! (> pool-balance u0) ERR_POOL_EMPTY)
+      (asserts! (<= request-amount protected-amount) ERR_REQUEST_EXCEEDS_PROTECTED)
+      (asserts! (< (- block-height (get timestamp request-data)) REQUEST_EXPIRATION_PERIOD) ERR_REQUEST_NOT_EXPIRED)
+      (let ((payout-amount (calculate-payout-amount request-amount pool-balance)))
+        (match (as-contract (stx-transfer? payout-amount tx-sender requester))
+          success (begin
+            (var-set protection-pool (- pool-balance payout-amount))
+            (if (< payout-amount request-amount)
+                (map-set protection-requests request-key { status: "partially-paid", timestamp: block-height, paid-amount: payout-amount })
+                (begin
+                  (map-delete protection-requests request-key)
+                  (map-delete protected-contracts requester)))
+            (print { event: "request-approved", requester: requester, request-amount: request-amount, payout-amount: payout-amount })
+            (ok payout-amount))
+          error (err error))))))
+
+;; Function to reject a request
+(define-public (reject-request (requester principal) (request-amount uint))
+  (begin
+    (asserts! (contract-not-paused) ERR_CONTRACT_PAUSED)
+    (let (
+      (request-key { requester: requester, amount: request-amount })
+      (request-data (unwrap! (map-get? protection-requests request-key) ERR_REQUEST_NOT_FOUND))
+    )
+      (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get status request-data) "pending") ERR_REQUEST_ALREADY_PROCESSED)
+      (asserts! (< (- block-height (get timestamp request-data)) REQUEST_EXPIRATION_PERIOD) ERR_REQUEST_NOT_EXPIRED)
+      (map-set protection-requests request-key { status: "rejected", timestamp: (get timestamp request-data), paid-amount: u0 })
+      (print { event: "request-rejected", requester: requester, request-amount: request-amount })
+      (ok true))))
+
+;; Function to check and expire a single request
+(define-public (check-and-expire-request (requester principal) (request-amount uint))
+  (let (
+    (request-key { requester: requester, amount: request-amount })
+    (request-data (unwrap! (map-get? protection-requests request-key) ERR_REQUEST_NOT_FOUND))
+  )
+    (if (and (is-eq (get status request-data) "pending")
+             (>= (- block-height (get timestamp request-data)) REQUEST_EXPIRATION_PERIOD))
+        (begin
+          (map-set protection-requests request-key { status: "expired", timestamp: (get timestamp request-data), paid-amount: u0 })
+          (print { event: "request-expired", requester: requester, request-amount: request-amount })
+          (ok true))
+        (ok false))))
+
+;; Function to change the contract owner
+(define-public (change-contract-owner (new-owner principal))
+  (begin
+    (asserts! (contract-not-paused) ERR_CONTRACT_PAUSED)
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    (asserts! (not (is-eq new-owner 'SP000000000000000000002Q6VF78)) ERR_INVALID_PRINCIPAL)
+    (print { event: "contract-owner-changed", old-owner: (var-get contract-owner), new-owner: new-owner })
+    (ok (var-set contract-owner new-owner))))
+
+;; Function to pause contract in emergency
+(define-public (set-contract-pause (paused bool))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    (ok (var-set contract-paused paused))))
+
